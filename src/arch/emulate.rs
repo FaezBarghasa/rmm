@@ -1,5 +1,4 @@
-use core::{marker::PhantomData, mem, ptr};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, marker::PhantomData, mem, ptr, sync::Mutex};
 
 use crate::{
     arch::x86_64::X8664Arch, page::PageFlags, Arch, MemoryArea, PageEntry, PhysicalAddress,
@@ -20,7 +19,7 @@ impl Arch for EmulateArch {
     const ENTRY_FLAG_PRESENT: usize = X8664Arch::ENTRY_FLAG_PRESENT;
     const ENTRY_FLAG_READONLY: usize = X8664Arch::ENTRY_FLAG_READONLY;
     const ENTRY_FLAG_READWRITE: usize = X8664Arch::ENTRY_FLAG_READWRITE;
-    const ENTRY_FLAG_USER: usize = X8664Arch::ENTRY_FLAG_USER;
+    const ENTRY_FLAG_PAGE_USER: usize = X8664Arch::ENTRY_FLAG_PAGE_USER;
     const ENTRY_FLAG_NO_EXEC: usize = X8664Arch::ENTRY_FLAG_NO_EXEC;
     const ENTRY_FLAG_EXEC: usize = X8664Arch::ENTRY_FLAG_EXEC;
 
@@ -29,77 +28,98 @@ impl Arch for EmulateArch {
     const ENTRY_FLAG_GLOBAL: usize = X8664Arch::ENTRY_FLAG_GLOBAL;
     const ENTRY_FLAG_NO_GLOBAL: usize = X8664Arch::ENTRY_FLAG_NO_GLOBAL;
 
+    const ENTRY_ADDRESS_WIDTH: usize = X8664Arch::ENTRY_ADDRESS_WIDTH;
+
+    const ENTRY_FLAG_WRITE_COMBINING: usize = X8664Arch::ENTRY_FLAG_WRITE_COMBINING;
+
     unsafe fn init() -> &'static [MemoryArea] {
-        // Create machine with PAGE_ENTRIES pages offset mapped (2 MiB on x86_64)
-        let mut machine = Machine::new(MEMORY_SIZE);
+        unsafe {
+            // Create machine with PAGE_ENTRIES pages offset mapped (2 MiB on x86_64)
+            let mut machine = Machine::new(MEMORY_SIZE);
 
-        // PML4 index 256 (PHYS_OFFSET) link to PDP
-        let pml4 = 0;
-        let pdp = pml4 + Self::PAGE_SIZE;
-        let flags = Self::ENTRY_FLAG_READWRITE | Self::ENTRY_FLAG_PRESENT;
-        machine.write_phys::<usize>(
-            PhysicalAddress::new(pml4 + 256 * Self::PAGE_ENTRY_SIZE),
-            pdp | flags,
-        );
-
-        // PDP link to PD
-        let pd = pdp + Self::PAGE_SIZE;
-        machine.write_phys::<usize>(PhysicalAddress::new(pdp), pd | flags);
-
-        // PD link to PT
-        let pt = pd + Self::PAGE_SIZE;
-        machine.write_phys::<usize>(PhysicalAddress::new(pd), pt | flags);
-
-        // PT links to frames
-        for i in 0..Self::PAGE_ENTRIES {
-            let page = i * Self::PAGE_SIZE;
+            // PML4 index 256 (PHYS_OFFSET) link to PDP
+            let pml4 = 0;
+            let pdp = pml4 + Self::PAGE_SIZE;
+            let flags = Self::ENTRY_FLAG_READWRITE | Self::ENTRY_FLAG_PRESENT;
             machine.write_phys::<usize>(
-                PhysicalAddress::new(pt + i * Self::PAGE_ENTRY_SIZE),
-                page | flags,
+                PhysicalAddress::new(pml4 + 256 * Self::PAGE_ENTRY_SIZE),
+                pdp | flags,
             );
+
+            // PDP link to PD
+            let pd = pdp + Self::PAGE_SIZE;
+            machine.write_phys::<usize>(PhysicalAddress::new(pdp), pd | flags);
+
+            // PD link to PT
+            let pt = pd + Self::PAGE_SIZE;
+            machine.write_phys::<usize>(PhysicalAddress::new(pd), pt | flags);
+
+            // PT links to frames
+            for i in 0..Self::PAGE_ENTRIES {
+                let page = i * Self::PAGE_SIZE;
+                machine.write_phys::<usize>(
+                    PhysicalAddress::new(pt + i * Self::PAGE_ENTRY_SIZE),
+                    page | flags,
+                );
+            }
+
+            *MACHINE.lock().unwrap() = Some(machine);
+
+            // Set table to pml4
+            EmulateArch::set_table(TableKind::Kernel, PhysicalAddress::new(pml4));
+
+            &MEMORY_AREAS
         }
-
-        MACHINE = Some(machine);
-
-        // Set table to pml4
-        EmulateArch::set_table(TableKind::Kernel, PhysicalAddress::new(pml4));
-
-        &MEMORY_AREAS
     }
 
     #[inline(always)]
     unsafe fn read<T>(address: VirtualAddress) -> T {
-        MACHINE.as_ref().unwrap().read(address)
+        MACHINE.lock().unwrap().as_ref().unwrap().read(address)
     }
 
     #[inline(always)]
     unsafe fn write<T>(address: VirtualAddress, value: T) {
-        MACHINE.as_mut().unwrap().write(address, value)
+        MACHINE
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .write(address, value)
     }
 
     #[inline(always)]
     unsafe fn write_bytes(address: VirtualAddress, value: u8, count: usize) {
-        MACHINE.as_mut().unwrap().write_bytes(address, value, count)
+        MACHINE
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .write_bytes(address, value, count)
     }
 
     #[inline(always)]
     unsafe fn invalidate(address: VirtualAddress) {
-        MACHINE.as_mut().unwrap().invalidate(address);
+        MACHINE
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .invalidate(address);
     }
 
     #[inline(always)]
     unsafe fn invalidate_all() {
-        MACHINE.as_mut().unwrap().invalidate_all();
+        MACHINE.lock().unwrap().as_mut().unwrap().invalidate_all();
     }
 
     #[inline(always)]
     unsafe fn table(_table_kind: TableKind) -> PhysicalAddress {
-        MACHINE.as_mut().unwrap().get_table()
+        MACHINE.lock().unwrap().as_mut().unwrap().get_table()
     }
 
     #[inline(always)]
     unsafe fn set_table(_table_kind: TableKind, address: PhysicalAddress) {
-        MACHINE.as_mut().unwrap().set_table(address);
+        MACHINE.lock().unwrap().as_mut().unwrap().set_table(address);
     }
     fn virt_is_valid(_address: VirtualAddress) -> bool {
         // TODO: Don't see why an emulated arch would have any problems with canonicalness...
@@ -120,7 +140,7 @@ static MEMORY_AREAS: [MemoryArea; 2] = [
     },
 ];
 
-static mut MACHINE: Option<Machine<EmulateArch>> = None;
+static MACHINE: Mutex<Option<Machine<EmulateArch>>> = Mutex::new(None);
 
 struct Machine<A> {
     memory: Box<[u8]>,
@@ -275,7 +295,7 @@ impl<A: Arch> Machine<A> {
             }
 
             // Page directory pointer
-            let a3 = e3 & A::ENTRY_ADDRESS_MASK;
+            let a3 = ((e3 >> A::ENTRY_ADDRESS_SHIFT) & A::ENTRY_ADDRESS_MASK) << A::PAGE_SHIFT;
             for i3 in 0..A::PAGE_ENTRIES {
                 let e2 =
                     self.read_phys::<usize>(PhysicalAddress::new(a3 + i3 * A::PAGE_ENTRY_SIZE));
@@ -285,7 +305,7 @@ impl<A: Arch> Machine<A> {
                 }
 
                 // Page directory
-                let a2 = e2 & A::ENTRY_ADDRESS_MASK;
+                let a2 = ((e2 >> A::ENTRY_ADDRESS_SHIFT) & A::ENTRY_ADDRESS_MASK) << A::PAGE_SHIFT;
                 for i2 in 0..A::PAGE_ENTRIES {
                     let e1 =
                         self.read_phys::<usize>(PhysicalAddress::new(a2 + i2 * A::PAGE_ENTRY_SIZE));
@@ -295,7 +315,8 @@ impl<A: Arch> Machine<A> {
                     }
 
                     // Page table
-                    let a1 = e1 & A::ENTRY_ADDRESS_MASK;
+                    let a1 =
+                        ((e1 >> A::ENTRY_ADDRESS_SHIFT) & A::ENTRY_ADDRESS_MASK) << A::PAGE_SHIFT;
                     for i1 in 0..A::PAGE_ENTRIES {
                         let e = self
                             .read_phys::<usize>(PhysicalAddress::new(a1 + i1 * A::PAGE_ENTRY_SIZE));
@@ -308,7 +329,7 @@ impl<A: Arch> Machine<A> {
                         let page = (i4 << 39) | (i3 << 30) | (i2 << 21) | (i1 << 12);
                         //println!("map 0x{:X} to 0x{:X}, 0x{:X}", page, a, f);
                         self.map
-                            .insert(VirtualAddress::new(page), PageEntry::new(e));
+                            .insert(VirtualAddress::new(page), PageEntry::from_data(e));
                     }
                 }
             }

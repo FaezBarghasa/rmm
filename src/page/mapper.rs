@@ -23,13 +23,17 @@ impl<A: Arch, F: FrameAllocator> PageMapper<A, F> {
     }
 
     pub unsafe fn create(table_kind: TableKind, mut allocator: F) -> Option<Self> {
-        let table_addr = allocator.allocate_one()?;
-        Some(Self::new(table_kind, table_addr, allocator))
+        unsafe {
+            let table_addr = allocator.allocate_one()?;
+            Some(Self::new(table_kind, table_addr, allocator))
+        }
     }
 
     pub unsafe fn current(table_kind: TableKind, allocator: F) -> Self {
-        let table_addr = A::table(table_kind);
-        Self::new(table_kind, table_addr, allocator)
+        unsafe {
+            let table_addr = A::table(table_kind);
+            Self::new(table_kind, table_addr, allocator)
+        }
     }
 
     pub fn is_current(&self) -> bool {
@@ -37,7 +41,9 @@ impl<A: Arch, F: FrameAllocator> PageMapper<A, F> {
     }
 
     pub unsafe fn make_current(&self) {
-        A::set_table(self.table_kind, self.table_addr);
+        unsafe {
+            A::set_table(self.table_kind, self.table_addr);
+        }
     }
 
     pub fn table(&self) -> PageTable<A> {
@@ -59,33 +65,37 @@ impl<A: Arch, F: FrameAllocator> PageMapper<A, F> {
         virt: VirtualAddress,
         f: impl FnOnce(PhysicalAddress, PageFlags<A>) -> (PhysicalAddress, PageFlags<A>),
     ) -> Option<(PageFlags<A>, PhysicalAddress, PageFlush<A>)> {
-        self.visit(virt, |p1, i| {
-            let old_entry = p1.entry(i)?;
-            let old_phys = old_entry.address().ok()?;
-            let old_flags = old_entry.flags();
-            let (new_phys, new_flags) = f(old_phys, old_flags);
-            // TODO: Higher-level PageEntry::new interface?
-            let new_entry = PageEntry::new(new_phys.data() | new_flags.data());
-            p1.set_entry(i, new_entry);
-            Some((old_flags, old_phys, PageFlush::new(virt)))
-        })
-        .flatten()
+        unsafe {
+            self.visit(virt, |p1, i| {
+                let old_entry = p1.entry(i)?;
+                let old_phys = old_entry.address().ok()?;
+                let old_flags = old_entry.flags();
+                let (new_phys, new_flags) = f(old_phys, old_flags);
+                // TODO: Higher-level PageEntry::new interface?
+                let new_entry = PageEntry::new(new_phys.data(), new_flags.data());
+                p1.set_entry(i, new_entry);
+                Some((old_flags, old_phys, PageFlush::new(virt)))
+            })
+            .flatten()
+        }
     }
     pub unsafe fn remap_with(
         &mut self,
         virt: VirtualAddress,
         map_flags: impl FnOnce(PageFlags<A>) -> PageFlags<A>,
     ) -> Option<(PageFlags<A>, PhysicalAddress, PageFlush<A>)> {
-        self.remap_with_full(virt, |same_phys, old_flags| {
-            (same_phys, map_flags(old_flags))
-        })
+        unsafe {
+            self.remap_with_full(virt, |same_phys, old_flags| {
+                (same_phys, map_flags(old_flags))
+            })
+        }
     }
     pub unsafe fn remap(
         &mut self,
         virt: VirtualAddress,
         flags: PageFlags<A>,
     ) -> Option<PageFlush<A>> {
-        self.remap_with(virt, |_| flags).map(|(_, _, flush)| flush)
+        unsafe { self.remap_with(virt, |_| flags).map(|(_, _, flush)| flush) }
     }
 
     pub unsafe fn map(
@@ -93,8 +103,10 @@ impl<A: Arch, F: FrameAllocator> PageMapper<A, F> {
         virt: VirtualAddress,
         flags: PageFlags<A>,
     ) -> Option<PageFlush<A>> {
-        let phys = self.allocator.allocate_one()?;
-        self.map_phys(virt, phys, flags)
+        unsafe {
+            let phys = self.allocator.allocate_one()?;
+            self.map_phys(virt, phys, flags)
+        }
     }
 
     pub unsafe fn map_phys(
@@ -103,35 +115,36 @@ impl<A: Arch, F: FrameAllocator> PageMapper<A, F> {
         phys: PhysicalAddress,
         flags: PageFlags<A>,
     ) -> Option<PageFlush<A>> {
-        //TODO: verify virt and phys are aligned
-        //TODO: verify flags have correct bits
-        let entry = PageEntry::new(phys.data() | flags.data());
-        let mut table = self.table();
-        loop {
-            let i = table.index_of(virt)?;
-            if table.level() == 0 {
-                //TODO: check for overwriting entry
-                table.set_entry(i, entry);
-                return Some(PageFlush::new(virt));
-            } else {
-                let next_opt = table.next(i);
-                let next = match next_opt {
-                    Some(some) => some,
-                    None => {
-                        let next_phys = self.allocator.allocate_one()?;
-                        //TODO: correct flags?
-                        let flags = A::ENTRY_FLAG_READWRITE
-                            | A::ENTRY_FLAG_DEFAULT_TABLE
-                            | if virt.kind() == TableKind::User {
-                                A::ENTRY_FLAG_USER
-                            } else {
-                                0
-                            };
-                        table.set_entry(i, PageEntry::new(next_phys.data() | flags));
-                        table.next(i)?
-                    }
-                };
-                table = next;
+        unsafe {
+            //TODO: verify virt and phys are aligned
+            //TODO: verify flags have correct bits
+            let entry = PageEntry::new(phys.data(), flags.data());
+            let mut table = self.table();
+            loop {
+                let i = table.index_of(virt)?;
+                if table.level() == 0 {
+                    //TODO: check for overwriting entry
+                    table.set_entry(i, entry);
+                    return Some(PageFlush::new(virt));
+                } else {
+                    let next_opt = table.next(i);
+                    let next = match next_opt {
+                        Some(some) => some,
+                        None => {
+                            let next_phys = self.allocator.allocate_one()?;
+                            //TODO: correct flags?
+                            let flags = A::ENTRY_FLAG_DEFAULT_TABLE
+                                | if virt.kind() == TableKind::User {
+                                    A::ENTRY_FLAG_TABLE_USER
+                                } else {
+                                    0
+                                };
+                            table.set_entry(i, PageEntry::new(next_phys.data(), flags));
+                            table.next(i)?
+                        }
+                    };
+                    table = next;
+                }
             }
         }
     }
@@ -140,8 +153,10 @@ impl<A: Arch, F: FrameAllocator> PageMapper<A, F> {
         phys: PhysicalAddress,
         flags: PageFlags<A>,
     ) -> Option<(VirtualAddress, PageFlush<A>)> {
-        let virt = A::phys_to_virt(phys);
-        self.map_phys(virt, phys, flags).map(|flush| (virt, flush))
+        unsafe {
+            let virt = A::phys_to_virt(phys);
+            self.map_phys(virt, phys, flags).map(|flush| (virt, flush))
+        }
     }
     fn visit<T>(
         &self,
@@ -170,9 +185,11 @@ impl<A: Arch, F: FrameAllocator> PageMapper<A, F> {
         virt: VirtualAddress,
         unmap_parents: bool,
     ) -> Option<PageFlush<A>> {
-        let (old, _, flush) = self.unmap_phys(virt, unmap_parents)?;
-        self.allocator.free_one(old);
-        Some(flush)
+        unsafe {
+            let (old, _, flush) = self.unmap_phys(virt, unmap_parents)?;
+            self.allocator.free_one(old);
+            Some(flush)
+        }
     }
 
     pub unsafe fn unmap_phys(
@@ -180,11 +197,13 @@ impl<A: Arch, F: FrameAllocator> PageMapper<A, F> {
         virt: VirtualAddress,
         unmap_parents: bool,
     ) -> Option<(PhysicalAddress, PageFlags<A>, PageFlush<A>)> {
-        //TODO: verify virt is aligned
-        let mut table = self.table();
-        let level = table.level();
-        unmap_phys_inner(virt, &mut table, level, unmap_parents, &mut self.allocator)
-            .map(|(pa, pf)| (pa, pf, PageFlush::new(virt)))
+        unsafe {
+            //TODO: verify virt is aligned
+            let mut table = self.table();
+            let level = table.level();
+            unmap_phys_inner(virt, &mut table, level, unmap_parents, &mut self.allocator)
+                .map(|(pa, pf)| (pa, pf, PageFlush::new(virt)))
+        }
     }
 }
 unsafe fn unmap_phys_inner<A: Arch>(
@@ -194,35 +213,38 @@ unsafe fn unmap_phys_inner<A: Arch>(
     unmap_parents: bool,
     allocator: &mut impl FrameAllocator,
 ) -> Option<(PhysicalAddress, PageFlags<A>)> {
-    let i = table.index_of(virt)?;
+    unsafe {
+        let i = table.index_of(virt)?;
 
-    if table.level() == 0 {
-        let entry_opt = table.entry(i);
-        table.set_entry(i, PageEntry::new(0));
-        let entry = entry_opt?;
+        if table.level() == 0 {
+            let entry_opt = table.entry(i);
+            table.set_entry(i, PageEntry::new(0, 0));
+            let entry = entry_opt?;
 
-        Some((entry.address().ok()?, entry.flags()))
-    } else {
-        let mut subtable = table.next(i)?;
+            Some((entry.address().ok()?, entry.flags()))
+        } else {
+            let mut subtable = table.next(i)?;
 
-        let res = unmap_phys_inner(virt, &mut subtable, initial_level, unmap_parents, allocator)?;
+            let res =
+                unmap_phys_inner(virt, &mut subtable, initial_level, unmap_parents, allocator)?;
 
-        //TODO: This is a bad idea for architectures where the kernel mappings are done in the process tables,
-        // as these mappings may become out of sync
-        if unmap_parents {
-            // TODO: Use a counter? This would reduce the remaining number of available bits, but could be
-            // faster (benchmark is needed).
-            let is_still_populated = (0..A::PAGE_ENTRIES)
-                .map(|j| subtable.entry(j).expect("must be within bounds"))
-                .any(|e| e.present());
+            //TODO: This is a bad idea for architectures where the kernel mappings are done in the process tables,
+            // as these mappings may become out of sync
+            if unmap_parents {
+                // TODO: Use a counter? This would reduce the remaining number of available bits, but could be
+                // faster (benchmark is needed).
+                let is_still_populated = (0..A::PAGE_ENTRIES)
+                    .map(|j| subtable.entry(j).expect("must be within bounds"))
+                    .any(|e| e.present());
 
-            if !is_still_populated {
-                allocator.free_one(subtable.phys());
-                table.set_entry(i, PageEntry::new(0));
+                if !is_still_populated {
+                    allocator.free_one(subtable.phys());
+                    table.set_entry(i, PageEntry::new(0, 0));
+                }
             }
-        }
 
-        Some(res)
+            Some(res)
+        }
     }
 }
 impl<A, F: core::fmt::Debug> core::fmt::Debug for PageMapper<A, F> {

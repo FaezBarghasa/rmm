@@ -10,21 +10,21 @@ impl Arch for RiscV64Sv48Arch {
     const PAGE_ENTRY_SHIFT: usize = 9; // 512 entries, 8 bytes each
     const PAGE_LEVELS: usize = 4; // L0, L1, L2, L3
 
-    //TODO
-    const ENTRY_ADDRESS_SHIFT: usize = 52;
-    const ENTRY_FLAG_DEFAULT_PAGE: usize
-        = Self::ENTRY_FLAG_PRESENT
-        | 1 << 1 // Read flag
-        ;
+    const ENTRY_ADDRESS_WIDTH: usize = 44;
+    const ENTRY_ADDRESS_SHIFT: usize = 10;
+
+    const ENTRY_FLAG_DEFAULT_PAGE: usize = Self::ENTRY_FLAG_PRESENT | Self::ENTRY_FLAG_READONLY;
     const ENTRY_FLAG_DEFAULT_TABLE: usize = Self::ENTRY_FLAG_PRESENT;
     const ENTRY_FLAG_PRESENT: usize = 1 << 0;
-    const ENTRY_FLAG_READONLY: usize = 0;
-    const ENTRY_FLAG_READWRITE: usize = 1 << 2;
-    const ENTRY_FLAG_USER: usize = 1 << 4;
+    const ENTRY_FLAG_READONLY: usize = 1 << 1;
+    const ENTRY_FLAG_READWRITE: usize = 3 << 1;
+    const ENTRY_FLAG_PAGE_USER: usize = 1 << 4;
+    const ENTRY_FLAG_TABLE_USER: usize = 0;
     const ENTRY_FLAG_NO_EXEC: usize = 0;
     const ENTRY_FLAG_EXEC: usize = 1 << 3;
     const ENTRY_FLAG_GLOBAL: usize = 1 << 5;
     const ENTRY_FLAG_NO_GLOBAL: usize = 0;
+    const ENTRY_FLAG_WRITE_COMBINING: usize = 0;
 
     const PHYS_OFFSET: usize = 0xFFFF_8000_0000_0000;
 
@@ -33,29 +33,43 @@ impl Arch for RiscV64Sv48Arch {
     }
 
     #[inline(always)]
-    unsafe fn invalidate(_address: VirtualAddress) {
-        //TODO: can one address be invalidated?
-        Self::invalidate_all();
+    unsafe fn invalidate(address: VirtualAddress) {
+        unsafe {
+            asm!("sfence.vma {}", in(reg) address.data());
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn invalidate_all() {
+        unsafe {
+            asm!("sfence.vma");
+        }
     }
 
     #[inline(always)]
     unsafe fn table(_table_kind: TableKind) -> PhysicalAddress {
-        let satp: usize;
-        asm!("csrr {0}, satp", out(reg) satp);
-        PhysicalAddress::new(
-            (satp & 0x0000_0FFF_FFFF_FFFF) << Self::PAGE_SHIFT, // Convert from PPN
-        )
+        unsafe {
+            let satp: usize;
+            asm!("csrr {0}, satp", out(reg) satp);
+            PhysicalAddress::new(
+                (satp & Self::ENTRY_ADDRESS_MASK) << Self::PAGE_SHIFT, // Convert from PPN
+            )
+        }
     }
 
     #[inline(always)]
     unsafe fn set_table(_table_kind: TableKind, address: PhysicalAddress) {
-        let satp = (9 << 60) | // Sv48 MODE
+        unsafe {
+            let satp = (9 << 60) | // Sv48 MODE
             (address.data() >> Self::PAGE_SHIFT); // Convert to PPN (TODO: ensure alignment)
-        asm!("csrw satp, {0}", in(reg) satp);
+            asm!("csrw satp, {0}", in(reg) satp);
+            Self::invalidate_all();
+        }
     }
+
     fn virt_is_valid(address: VirtualAddress) -> bool {
         // RISC-V SV48 uses 48-bit sign-extended addresses, identical to 4-level paging on x86_64.
-        let mask = 0xFFFF_8000_0000_0000;
+        let mask = !((Self::PAGE_ADDRESS_SIZE as usize - 1) >> 1);
         let masked = address.data() & mask;
 
         masked == mask || masked == 0
@@ -79,9 +93,9 @@ mod tests {
         assert_eq!(RiscV64Sv48Arch::PAGE_ENTRY_MASK, 0x1FF);
         assert_eq!(RiscV64Sv48Arch::PAGE_NEGATIVE_MASK, 0xFFFF_0000_0000_0000);
 
-        assert_eq!(RiscV64Sv48Arch::ENTRY_ADDRESS_SIZE, 0x0010_0000_0000_0000);
-        assert_eq!(RiscV64Sv48Arch::ENTRY_ADDRESS_MASK, 0x000F_FFFF_FFFF_F000);
-        assert_eq!(RiscV64Sv48Arch::ENTRY_FLAGS_MASK, 0xFFF0_0000_0000_0FFF);
+        assert_eq!(RiscV64Sv48Arch::ENTRY_ADDRESS_SIZE, 0x0000_1000_0000_0000);
+        assert_eq!(RiscV64Sv48Arch::ENTRY_ADDRESS_MASK, 0x0000_0FFF_FFFF_FFFF);
+        assert_eq!(RiscV64Sv48Arch::ENTRY_FLAGS_MASK, 0xFFC0_0000_0000_03FF);
 
         assert_eq!(RiscV64Sv48Arch::PHYS_OFFSET, 0xFFFF_8000_0000_0000);
     }

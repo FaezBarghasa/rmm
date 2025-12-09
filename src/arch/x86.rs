@@ -11,18 +11,19 @@ impl Arch for X86Arch {
     const PAGE_ENTRY_SHIFT: usize = 10; // 1024 entries, 4 bytes each
     const PAGE_LEVELS: usize = 2; // PD, PT
 
-    const ENTRY_ADDRESS_SHIFT: usize = 32;
+    const ENTRY_ADDRESS_WIDTH: usize = 20;
     const ENTRY_FLAG_DEFAULT_PAGE: usize = Self::ENTRY_FLAG_PRESENT;
-    const ENTRY_FLAG_DEFAULT_TABLE: usize = Self::ENTRY_FLAG_PRESENT;
+    const ENTRY_FLAG_DEFAULT_TABLE: usize = Self::ENTRY_FLAG_PRESENT | Self::ENTRY_FLAG_READWRITE;
     const ENTRY_FLAG_PRESENT: usize = 1 << 0;
     const ENTRY_FLAG_READONLY: usize = 0;
     const ENTRY_FLAG_READWRITE: usize = 1 << 1;
-    const ENTRY_FLAG_USER: usize = 1 << 2;
+    const ENTRY_FLAG_PAGE_USER: usize = 1 << 2;
     // Not used: const ENTRY_FLAG_HUGE: usize = 1 << 7;
     const ENTRY_FLAG_GLOBAL: usize = 1 << 8;
     const ENTRY_FLAG_NO_GLOBAL: usize = 0;
     const ENTRY_FLAG_NO_EXEC: usize = 0; // NOT AVAILABLE UNLESS PAE IS USED!
     const ENTRY_FLAG_EXEC: usize = 0;
+    const ENTRY_FLAG_WRITE_COMBINING: usize = 1 << 7;
 
     const PHYS_OFFSET: usize = 0x8000_0000;
 
@@ -70,8 +71,8 @@ mod tests {
         assert_eq!(X86Arch::PAGE_ENTRY_MASK, 0x3FF);
         assert_eq!(X86Arch::PAGE_NEGATIVE_MASK, 0x0000_0000_0000);
 
-        assert_eq!(X86Arch::ENTRY_ADDRESS_SIZE, 0x0000_0001_0000_0000);
-        assert_eq!(X86Arch::ENTRY_ADDRESS_MASK, 0xFFFF_F000);
+        assert_eq!(X86Arch::ENTRY_ADDRESS_SIZE, 0x0000_0000_0010_0000);
+        assert_eq!(X86Arch::ENTRY_ADDRESS_MASK, 0x000F_FFFF);
         assert_eq!(X86Arch::ENTRY_FLAGS_MASK, 0x0000_0FFF);
 
         assert_eq!(X86Arch::PHYS_OFFSET, 0x8000_0000);

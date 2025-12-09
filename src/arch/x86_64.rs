@@ -10,18 +10,19 @@ impl Arch for X8664Arch {
     const PAGE_ENTRY_SHIFT: usize = 9; // 512 entries, 8 bytes each
     const PAGE_LEVELS: usize = 4; // PML4, PDP, PD, PT
 
-    const ENTRY_ADDRESS_SHIFT: usize = 52;
+    const ENTRY_ADDRESS_WIDTH: usize = 40;
     const ENTRY_FLAG_DEFAULT_PAGE: usize = Self::ENTRY_FLAG_PRESENT;
-    const ENTRY_FLAG_DEFAULT_TABLE: usize = Self::ENTRY_FLAG_PRESENT;
+    const ENTRY_FLAG_DEFAULT_TABLE: usize = Self::ENTRY_FLAG_PRESENT | Self::ENTRY_FLAG_READWRITE;
     const ENTRY_FLAG_PRESENT: usize = 1 << 0;
     const ENTRY_FLAG_READONLY: usize = 0;
     const ENTRY_FLAG_READWRITE: usize = 1 << 1;
-    const ENTRY_FLAG_USER: usize = 1 << 2;
+    const ENTRY_FLAG_PAGE_USER: usize = 1 << 2;
     // Not used: const ENTRY_FLAG_HUGE: usize = 1 << 7;
     const ENTRY_FLAG_GLOBAL: usize = 1 << 8;
     const ENTRY_FLAG_NO_GLOBAL: usize = 0;
     const ENTRY_FLAG_NO_EXEC: usize = 1 << 63;
     const ENTRY_FLAG_EXEC: usize = 0;
+    const ENTRY_FLAG_WRITE_COMBINING: usize = 1 << 7;
 
     const PHYS_OFFSET: usize = Self::PAGE_NEGATIVE_MASK + (Self::PAGE_ADDRESS_SIZE >> 1) as usize; // PML4 slot 256 and onwards
 
@@ -31,33 +32,32 @@ impl Arch for X8664Arch {
 
     #[inline(always)]
     unsafe fn invalidate(address: VirtualAddress) {
-        asm!("invlpg [{0}]", in(reg) address.data());
+        unsafe {
+            asm!("invlpg [{0}]", in(reg) address.data());
+        }
     }
 
     #[inline(always)]
     unsafe fn table(_table_kind: TableKind) -> PhysicalAddress {
-        let address: usize;
-        asm!("mov {0}, cr3", out(reg) address);
-        PhysicalAddress::new(address)
+        unsafe {
+            let address: usize;
+            asm!("mov {0}, cr3", out(reg) address);
+            PhysicalAddress::new(address)
+        }
     }
 
     #[inline(always)]
     unsafe fn set_table(_table_kind: TableKind, address: PhysicalAddress) {
-        asm!("mov cr3, {0}", in(reg) address.data());
+        unsafe {
+            asm!("mov cr3, {0}", in(reg) address.data());
+        }
     }
 
     fn virt_is_valid(address: VirtualAddress) -> bool {
         // On x86_64, an address is valid if and only if it is canonical. It may still point to
         // unmapped memory, but will always be valid once translated via the page table has
         // suceeded.
-        address.is_canonical()
-    }
-}
-
-impl VirtualAddress {
-    #[doc(cfg(target_arch = "x86_64"))]
-    pub fn is_canonical(self) -> bool {
-        let masked = self.data() & 0xFFFF_8000_0000_0000;
+        let masked = address.data() & 0xFFFF_8000_0000_0000;
         // TODO: 5-level paging
         masked == 0xFFFF_8000_0000_0000 || masked == 0
     }
@@ -80,8 +80,8 @@ mod tests {
         assert_eq!(X8664Arch::PAGE_ENTRY_MASK, 0x1FF);
         assert_eq!(X8664Arch::PAGE_NEGATIVE_MASK, 0xFFFF_0000_0000_0000);
 
-        assert_eq!(X8664Arch::ENTRY_ADDRESS_SIZE, 0x0010_0000_0000_0000);
-        assert_eq!(X8664Arch::ENTRY_ADDRESS_MASK, 0x000F_FFFF_FFFF_F000);
+        assert_eq!(X8664Arch::ENTRY_ADDRESS_SIZE, 0x0000_0100_0000_0000);
+        assert_eq!(X8664Arch::ENTRY_ADDRESS_MASK, 0x0000_00FF_FFFF_FFFF);
         assert_eq!(X8664Arch::ENTRY_FLAGS_MASK, 0xFFF0_0000_0000_0FFF);
 
         assert_eq!(X8664Arch::PHYS_OFFSET, 0xFFFF_8000_0000_0000);
@@ -89,10 +89,10 @@ mod tests {
     #[test]
     fn is_canonical() {
         fn yes(address: usize) {
-            assert!(VirtualAddress::new(address).is_canonical());
+            assert!(X8664Arch::virt_is_valid(VirtualAddress::new(address)));
         }
         fn no(address: usize) {
-            assert!(!VirtualAddress::new(address).is_canonical());
+            assert!(!X8664Arch::virt_is_valid(VirtualAddress::new(address)));
         }
 
         yes(0xFFFF_8000_1337_1337);

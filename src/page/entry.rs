@@ -10,7 +10,14 @@ pub struct PageEntry<A> {
 
 impl<A: Arch> PageEntry<A> {
     #[inline(always)]
-    pub fn new(data: usize) -> Self {
+    pub fn new(address: usize, flags: usize) -> Self {
+        let data = (((address >> A::PAGE_SHIFT) & A::ENTRY_ADDRESS_MASK) << A::ENTRY_ADDRESS_SHIFT)
+            | flags;
+        Self::from_data(data)
+    }
+
+    #[inline(always)]
+    pub fn from_data(data: usize) -> Self {
         Self {
             data,
             phantom: PhantomData,
@@ -24,7 +31,9 @@ impl<A: Arch> PageEntry<A> {
 
     #[inline(always)]
     pub fn address(&self) -> Result<PhysicalAddress, PhysicalAddress> {
-        let addr = PhysicalAddress(self.data & A::ENTRY_ADDRESS_MASK);
+        let addr = PhysicalAddress(
+            ((self.data >> A::ENTRY_ADDRESS_SHIFT) & A::ENTRY_ADDRESS_MASK) << A::PAGE_SHIFT,
+        );
 
         if self.present() {
             Ok(addr)

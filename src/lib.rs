@@ -1,6 +1,4 @@
 #![cfg_attr(not(feature = "std"), no_std)]
-#![feature(doc_cfg)]
-#![feature(let_chains)]
 
 pub use crate::{allocator::*, arch::*, page::*};
 
@@ -25,7 +23,7 @@ pub enum TableKind {
 }
 
 /// Physical memory address
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
 pub struct PhysicalAddress(usize);
 
