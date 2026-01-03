@@ -18,7 +18,7 @@ impl Arch for X86Arch {
     const ENTRY_FLAG_READONLY: usize = 0;
     const ENTRY_FLAG_READWRITE: usize = 1 << 1;
     const ENTRY_FLAG_PAGE_USER: usize = 1 << 2;
-    // Not used: const ENTRY_FLAG_HUGE: usize = 1 << 7;
+    const ENTRY_FLAG_HUGE: usize = 1 << 7;
     const ENTRY_FLAG_GLOBAL: usize = 1 << 8;
     const ENTRY_FLAG_NO_GLOBAL: usize = 0;
     const ENTRY_FLAG_NO_EXEC: usize = 0; // NOT AVAILABLE UNLESS PAE IS USED!
@@ -28,7 +28,8 @@ impl Arch for X86Arch {
     const PHYS_OFFSET: usize = 0x8000_0000;
 
     unsafe fn init() -> &'static [MemoryArea] {
-        unimplemented!("X86Arch::init unimplemented");
+        // Memory initialization is handled by the kernel or bootloader.
+        &[]
     }
 
     #[inline(always)]

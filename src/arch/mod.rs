@@ -10,12 +10,16 @@ pub use self::x86::X86Arch;
 #[cfg(target_pointer_width = "64")]
 pub use self::{
     aarch64::AArch64Arch,
-    riscv64::{RiscV64Sv39Arch, RiscV64Sv48Arch},
+    aarch64_lpa2::AArch64Lpa2Arch,
+    riscv64::{RiscV64Sv39Arch, RiscV64Sv48Arch, RiscV64Sv57Arch},
     x86_64::X8664Arch,
+    x86_64_pml5::X8664Pml5Arch,
 };
 
 #[cfg(target_pointer_width = "64")]
 mod aarch64;
+#[cfg(target_pointer_width = "64")]
+mod aarch64_lpa2;
 #[cfg(all(feature = "std", target_pointer_width = "64"))]
 mod emulate;
 #[cfg(target_pointer_width = "64")]
@@ -24,6 +28,8 @@ mod riscv64;
 mod x86;
 #[cfg(target_pointer_width = "64")]
 mod x86_64;
+#[cfg(target_pointer_width = "64")]
+mod x86_64_pml5;
 
 pub trait Arch: Clone + Copy {
     const PAGE_SHIFT: usize;
@@ -44,8 +50,13 @@ pub trait Arch: Clone + Copy {
     const ENTRY_FLAG_GLOBAL: usize;
     const ENTRY_FLAG_NO_GLOBAL: usize;
     const ENTRY_FLAG_WRITE_COMBINING: usize;
+    const ENTRY_FLAG_HUGE: usize;
 
     const PHYS_OFFSET: usize;
+
+    fn flags_to_huge(flags: usize) -> usize {
+        flags | Self::ENTRY_FLAG_HUGE
+    }
 
     const PAGE_SIZE: usize = 1 << Self::PAGE_SHIFT;
     const PAGE_OFFSET_MASK: usize = Self::PAGE_SIZE - 1;

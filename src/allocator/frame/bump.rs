@@ -64,8 +64,22 @@ impl<A: Arch> FrameAllocator for BumpAllocator<A> {
         }
     }
 
-    unsafe fn free(&mut self, _address: PhysicalAddress, _count: FrameCount) {
-        unimplemented!("BumpAllocator::free not implemented");
+    unsafe fn free(&mut self, address: PhysicalAddress, count: FrameCount) {
+        // Bump allocators are watermark allocators - they don't support reclaiming memory.
+        // This is intentional for early boot where simplicity trumps efficiency.
+        // Memory is only truly reclaimed when the BuddyAllocator takes over.
+        //
+        // We log at debug level to help diagnose any unexpected free patterns during boot.
+        #[cfg(feature = "std")]
+        eprintln!(
+            "BumpAllocator::free ignored: addr={:#x} count={} (bump allocators don't reclaim)",
+            address.data(),
+            count.data()
+        );
+
+        // Intentionally do nothing - memory remains allocated but unusable.
+        // This is the expected behavior for a bump/arena allocator.
+        let _ = (address, count); // Suppress unused warnings
     }
 
     unsafe fn usage(&self) -> FrameUsage {

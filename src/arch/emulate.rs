@@ -1,8 +1,16 @@
-use std::{collections::BTreeMap, marker::PhantomData, mem, ptr, sync::Mutex};
+use std::{
+    collections::BTreeMap,
+    marker::PhantomData,
+    mem, ptr,
+    sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use crate::{
-    arch::x86_64::X8664Arch, page::PageFlags, Arch, MemoryArea, PageEntry, PhysicalAddress,
-    TableKind, VirtualAddress, MEGABYTE,
+    Arch, MEGABYTE, MemoryArea, PageEntry, PhysicalAddress, TableKind, VirtualAddress,
+    arch::x86_64::X8664Arch, page::PageFlags,
 };
 
 #[derive(Clone, Copy)]
@@ -31,37 +39,35 @@ impl Arch for EmulateArch {
     const ENTRY_ADDRESS_WIDTH: usize = X8664Arch::ENTRY_ADDRESS_WIDTH;
 
     const ENTRY_FLAG_WRITE_COMBINING: usize = X8664Arch::ENTRY_FLAG_WRITE_COMBINING;
+    const ENTRY_FLAG_HUGE: usize = X8664Arch::ENTRY_FLAG_HUGE;
 
     unsafe fn init() -> &'static [MemoryArea] {
         unsafe {
             // Create machine with PAGE_ENTRIES pages offset mapped (2 MiB on x86_64)
             let mut machine = Machine::new(MEMORY_SIZE);
 
-            // PML4 index 256 (PHYS_OFFSET) link to PDP
+            // PML4 index 0 link to PDP 0 (used for identity map)
             let pml4 = 0;
-            let pdp = pml4 + Self::PAGE_SIZE;
+            let pdp0 = pml4 + Self::PAGE_SIZE;
             let flags = Self::ENTRY_FLAG_READWRITE | Self::ENTRY_FLAG_PRESENT;
             machine.write_phys::<usize>(
-                PhysicalAddress::new(pml4 + 256 * Self::PAGE_ENTRY_SIZE),
-                pdp | flags,
+                PhysicalAddress::new(pml4 + 0 * Self::PAGE_ENTRY_SIZE),
+                pdp0 | flags,
             );
 
-            // PDP link to PD
-            let pd = pdp + Self::PAGE_SIZE;
-            machine.write_phys::<usize>(PhysicalAddress::new(pdp), pd | flags);
-
-            // PD link to PT
-            let pt = pd + Self::PAGE_SIZE;
-            machine.write_phys::<usize>(PhysicalAddress::new(pd), pt | flags);
-
-            // PT links to frames
-            for i in 0..Self::PAGE_ENTRIES {
-                let page = i * Self::PAGE_SIZE;
+            // PDP 0 maps 2GB using 2x 1GB huge pages
+            // MEMORY_SIZE (2GB) / 1GB = 2 entries
+            for i in 0..2 {
+                let phys = i * 1024 * MEGABYTE;
+                let huge_flags = flags | Self::ENTRY_FLAG_HUGE;
                 machine.write_phys::<usize>(
-                    PhysicalAddress::new(pt + i * Self::PAGE_ENTRY_SIZE),
-                    page | flags,
+                    PhysicalAddress::new(pdp0 + i * Self::PAGE_ENTRY_SIZE),
+                    phys | huge_flags,
                 );
             }
+
+            // Store the base address of the memory for direct access
+            MACHINE_BASE.store(machine.memory.as_ptr() as usize, Ordering::SeqCst);
 
             *MACHINE.lock().unwrap() = Some(machine);
 
@@ -74,11 +80,23 @@ impl Arch for EmulateArch {
 
     #[inline(always)]
     unsafe fn read<T>(address: VirtualAddress) -> T {
+        let base = MACHINE_BASE.load(Ordering::Relaxed);
+        let addr = address.data();
+        if addr >= base && addr < base + MEMORY_SIZE {
+            return unsafe { ptr::read(addr as *const T) };
+        }
         MACHINE.lock().unwrap().as_ref().unwrap().read(address)
     }
 
     #[inline(always)]
     unsafe fn write<T>(address: VirtualAddress, value: T) {
+        let base = MACHINE_BASE.load(Ordering::Relaxed);
+        let addr = address.data();
+        if addr >= base && addr < base + MEMORY_SIZE {
+            unsafe {
+                return ptr::write(addr as *mut T, value);
+            }
+        }
         MACHINE
             .lock()
             .unwrap()
@@ -88,7 +106,21 @@ impl Arch for EmulateArch {
     }
 
     #[inline(always)]
+    unsafe fn phys_to_virt(phys: PhysicalAddress) -> VirtualAddress {
+        // Return a pointer to the actual memory for direct access (simulating direct map)
+        let base = MACHINE_BASE.load(Ordering::Relaxed);
+        VirtualAddress::new(base + phys.data())
+    }
+
+    #[inline(always)]
     unsafe fn write_bytes(address: VirtualAddress, value: u8, count: usize) {
+        let base = MACHINE_BASE.load(Ordering::Relaxed);
+        let addr = address.data();
+        if addr >= base && addr < base + MEMORY_SIZE {
+            unsafe {
+                return ptr::write_bytes(addr as *mut u8, value, count);
+            }
+        }
         MACHINE
             .lock()
             .unwrap()
@@ -127,20 +159,23 @@ impl Arch for EmulateArch {
     }
 }
 
-const MEMORY_SIZE: usize = 64 * MEGABYTE;
+const MEMORY_SIZE: usize = 2 * 1024 * MEGABYTE;
 static MEMORY_AREAS: [MemoryArea; 2] = [
     MemoryArea {
         base: PhysicalAddress::new(EmulateArch::PAGE_SIZE * 4), // Initial PML4, PDP, PD, and PT wasted
         size: MEMORY_SIZE / 2 - EmulateArch::PAGE_SIZE * 4,
+        node_id: 0,
     },
     // Second area for debugging
     MemoryArea {
         base: PhysicalAddress::new(MEMORY_SIZE / 2),
         size: MEMORY_SIZE / 2,
+        node_id: 0,
     },
 ];
 
 static MACHINE: Mutex<Option<Machine<EmulateArch>>> = Mutex::new(None);
+static MACHINE_BASE: AtomicUsize = AtomicUsize::new(0);
 
 struct Machine<A> {
     memory: Box<[u8]>,
@@ -277,8 +312,11 @@ impl<A: Arch> Machine<A> {
         }
     }
 
-    fn invalidate(&mut self, _address: VirtualAddress) {
-        unimplemented!("EmulateArch::invalidate not implemented");
+    fn invalidate(&mut self, address: VirtualAddress) {
+        // Simulate TLB invalidation by removing the specific page from our translation cache.
+        // In a real CPU, this would flush the TLB entry for this virtual address.
+        let page_addr = VirtualAddress::new(address.data() & A::PAGE_ADDRESS_MASK);
+        self.map.remove(&page_addr);
     }
 
     //TODO: cleanup
@@ -304,6 +342,23 @@ impl<A: Arch> Machine<A> {
                     continue;
                 }
 
+                // Check for 1GB huge page (PDP level)
+                if f2 & A::ENTRY_FLAG_HUGE != 0 {
+                    let phys =
+                        ((e2 >> A::ENTRY_ADDRESS_SHIFT) & A::ENTRY_ADDRESS_MASK) << A::PAGE_SHIFT;
+                    for i2 in 0..A::PAGE_ENTRIES {
+                        for i1 in 0..A::PAGE_ENTRIES {
+                            let page = (i4 << 39) | (i3 << 30) | (i2 << 21) | (i1 << 12);
+                            let offset = (i2 << 21) | (i1 << 12);
+                            self.map.insert(
+                                VirtualAddress::new(page),
+                                PageEntry::new(phys + offset, f2),
+                            );
+                        }
+                    }
+                    continue;
+                }
+
                 // Page directory
                 let a2 = ((e2 >> A::ENTRY_ADDRESS_SHIFT) & A::ENTRY_ADDRESS_MASK) << A::PAGE_SHIFT;
                 for i2 in 0..A::PAGE_ENTRIES {
@@ -311,6 +366,21 @@ impl<A: Arch> Machine<A> {
                         self.read_phys::<usize>(PhysicalAddress::new(a2 + i2 * A::PAGE_ENTRY_SIZE));
                     let f1 = e1 & A::ENTRY_FLAGS_MASK;
                     if f1 & A::ENTRY_FLAG_PRESENT == 0 {
+                        continue;
+                    }
+
+                    // Check for 2MB huge page (PD level)
+                    if f1 & A::ENTRY_FLAG_HUGE != 0 {
+                        let phys = ((e1 >> A::ENTRY_ADDRESS_SHIFT) & A::ENTRY_ADDRESS_MASK)
+                            << A::PAGE_SHIFT;
+                        for i1 in 0..A::PAGE_ENTRIES {
+                            let page = (i4 << 39) | (i3 << 30) | (i2 << 21) | (i1 << 12);
+                            let offset = i1 << 12;
+                            self.map.insert(
+                                VirtualAddress::new(page),
+                                PageEntry::new(phys + offset, f1),
+                            );
+                        }
                         continue;
                     }
 
@@ -327,7 +397,6 @@ impl<A: Arch> Machine<A> {
 
                         // Page
                         let page = (i4 << 39) | (i3 << 30) | (i2 << 21) | (i1 << 12);
-                        //println!("map 0x{:X} to 0x{:X}, 0x{:X}", page, a, f);
                         self.map
                             .insert(VirtualAddress::new(page), PageEntry::from_data(e));
                     }

@@ -5,6 +5,8 @@ pub use crate::{allocator::*, arch::*, page::*};
 mod allocator;
 mod arch;
 mod page;
+pub mod personality;
+pub mod simd;
 
 pub const KILOBYTE: usize = 1024;
 pub const MEGABYTE: usize = KILOBYTE * 1024;
@@ -84,4 +86,5 @@ impl core::fmt::Debug for VirtualAddress {
 pub struct MemoryArea {
     pub base: PhysicalAddress,
     pub size: usize,
+    pub node_id: u32,
 }

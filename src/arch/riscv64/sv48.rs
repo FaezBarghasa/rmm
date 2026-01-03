@@ -25,11 +25,14 @@ impl Arch for RiscV64Sv48Arch {
     const ENTRY_FLAG_GLOBAL: usize = 1 << 5;
     const ENTRY_FLAG_NO_GLOBAL: usize = 0;
     const ENTRY_FLAG_WRITE_COMBINING: usize = 0;
+    // Use bit 8 (RSW) as a software marker for huge pages
+    const ENTRY_FLAG_HUGE: usize = 1 << 8;
 
     const PHYS_OFFSET: usize = 0xFFFF_8000_0000_0000;
 
     unsafe fn init() -> &'static [MemoryArea] {
-        unimplemented!("RiscV64Sv48Arch::init unimplemented");
+        // Memory initialization is handled by the kernel or bootloader.
+        &[]
     }
 
     #[inline(always)]

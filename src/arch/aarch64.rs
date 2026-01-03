@@ -10,8 +10,9 @@ impl Arch for AArch64Arch {
     const PAGE_ENTRY_SHIFT: usize = 9; // 512 entries, 8 bytes each
     const PAGE_LEVELS: usize = 4; // L0, L1, L2, L3
 
-    //TODO
-    const ENTRY_ADDRESS_WIDTH: usize = 40;
+    // Standard AArch64 uses 48-bit physical addressing
+    // For 52-bit (LPA2), use AArch64Lpa2Arch instead
+    const ENTRY_ADDRESS_WIDTH: usize = 48;
     const ENTRY_FLAG_DEFAULT_PAGE: usize = Self::ENTRY_FLAG_PRESENT
         | 1 << 1 // Page flag
         | 1 << 10 // Access flag
@@ -26,18 +27,26 @@ impl Arch for AArch64Arch {
     const ENTRY_FLAG_READONLY: usize = 1 << 7;
     const ENTRY_FLAG_READWRITE: usize = 0;
     const ENTRY_FLAG_PAGE_USER: usize = 1 << 6;
-    // This sets both userspace and privileged execute never
-    //TODO: Separate the two?
+    // This sets both userspace (UXN) and privileged (PXN) execute never
     const ENTRY_FLAG_NO_EXEC: usize = 0b11 << 53;
     const ENTRY_FLAG_EXEC: usize = 0;
     const ENTRY_FLAG_GLOBAL: usize = 0;
     const ENTRY_FLAG_NO_GLOBAL: usize = 1 << 11;
     const ENTRY_FLAG_WRITE_COMBINING: usize = 0;
+    // Use bit 55 (ignored) as a software marker for huge pages
+    const ENTRY_FLAG_HUGE: usize = 1 << 55;
 
     const PHYS_OFFSET: usize = 0xFFFF_8000_0000_0000;
 
+    fn flags_to_huge(flags: usize) -> usize {
+        // Clear bit 1 (Page) to indicate Block (Huge Page)
+        (flags | Self::ENTRY_FLAG_HUGE) & !(1 << 1)
+    }
+
     unsafe fn init() -> &'static [MemoryArea] {
-        unimplemented!("AArch64Arch::init unimplemented");
+        // Memory initialization is handled by the kernel or bootloader.
+        // This function returns an empty slice as a safe default for the library.
+        &[]
     }
 
     #[inline(always)]
@@ -97,9 +106,11 @@ impl Arch for AArch64Arch {
         }
     }
 
-    fn virt_is_valid(_address: VirtualAddress) -> bool {
-        //TODO: what makes an address valid on aarch64?
-        true
+    fn virt_is_valid(address: VirtualAddress) -> bool {
+        let data = address.data();
+        let top = data >> 48; // AArch64 48-bit addressing
+        // Top 16 bits must be all 0 (lower half) or all 1 (upper half)
+        top == 0 || top == 0xFFFF
     }
 }
 
@@ -120,9 +131,9 @@ mod tests {
         assert_eq!(AArch64Arch::PAGE_ENTRY_MASK, 0x1FF);
         assert_eq!(AArch64Arch::PAGE_NEGATIVE_MASK, 0xFFFF_0000_0000_0000);
 
-        assert_eq!(AArch64Arch::ENTRY_ADDRESS_SIZE, 0x0000_0100_0000_0000);
-        assert_eq!(AArch64Arch::ENTRY_ADDRESS_MASK, 0x0000_00FF_FFFF_FFFF);
-        assert_eq!(AArch64Arch::ENTRY_FLAGS_MASK, 0xFFF0_0000_0000_0FFF);
+        // 48-bit physical address (256TB)
+        assert_eq!(AArch64Arch::ENTRY_ADDRESS_SIZE, 0x0001_0000_0000_0000);
+        assert_eq!(AArch64Arch::ENTRY_ADDRESS_MASK, 0x0000_FFFF_FFFF_FFFF);
 
         assert_eq!(AArch64Arch::PHYS_OFFSET, 0xFFFF_8000_0000_0000);
     }

@@ -104,6 +104,23 @@ impl<A: Arch> PageFlags<A> {
 
     #[must_use]
     #[inline(always)]
+    pub fn huge(self, value: bool) -> Self {
+        if value {
+            let data = A::flags_to_huge(self.data);
+            unsafe { Self::from_data(data) }
+        } else {
+            let data = self.data & !A::ENTRY_FLAG_HUGE;
+            unsafe { Self::from_data(data) }
+        }
+    }
+
+    #[inline(always)]
+    pub fn has_huge(&self) -> bool {
+        self.data & A::ENTRY_FLAG_HUGE == A::ENTRY_FLAG_HUGE
+    }
+
+    #[must_use]
+    #[inline(always)]
     pub fn execute(self, value: bool) -> Self {
         //TODO: write xor execute?
         // Architecture may use no exec or exec, support either
